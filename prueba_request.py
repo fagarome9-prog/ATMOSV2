@@ -1,0 +1,166 @@
+import machine
+from machine import Pin
+import network
+import time
+import urequests
+import ujson
+# import lora_client   # <-- COMENTADO: módulo LoRa deshabilitado temporalmente
+import gc
+
+gc.collect()
+#------------------------------------
+#   LED ONBOARD
+#------------------------------------
+led = Pin("LED", machine.Pin.OUT)
+def blink(times=1, ms=150):
+    for i in range(times):
+        led.value(1)
+        time.sleep_ms(ms)
+        led.value(0)
+        time.sleep_ms(ms)
+
+#------------------------------------
+#   WIFI CONNECTION
+#------------------------------------
+wifi_ssid = 'TP-Link_7228' # Replace with WiFi SSID
+wifi_password = '91340863' # Replace with WiFi password
+server_ip = '192.168.0.100'
+server_port = 3000
+endpoint_reads = '/api/v1'
+BASE_URL = f'http://{server_ip}:{server_port}{endpoint_reads}'
+
+
+def connect_wifi(ssid, password):
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    if wlan.isconnected():
+        print('[WIFI] Pi Pico W is already connected to:', wlan.ifconfig())
+        return wlan
+    print('[WIFI] Connecting to WiFi network:', ssid)
+    wlan.connect(ssid, password)
+    intentos = 0
+    while not wlan.isconnected():
+        if intentos >= 10:
+            print('[WIFI] Failed to connect after 10 attempts. Restarting...')
+            machine.reset()
+        print(".", end="")
+        led.toggle()
+        time.sleep(1)
+        intentos += 1
+    
+    led.on()
+    ip, mascara, gateway, dns = wlan.ifconfig()
+    print(f"[WIFI] Connected! IP: {ip}, Mask: {mascara}, Gateway: {gateway}, DNS: {dns}\n")
+    return wlan
+
+#------------------------------------
+#   LORA INTERFACE  (deshabilitada)
+#------------------------------------
+# def esperar_primer_paquete(timeout_ms=5000):
+#     print("[LORA] Waiting for first packet...")
+#     inicio = time.ticks_ms()
+#     while not lora_client.actualizar():
+#         if time.ticks_diff(time.ticks_ms(), inicio) > timeout_ms:
+#             print("[LORA] No initial packet received, continuing anyway...")
+#             return False
+#         time.sleep_ms(20)
+#     print("[LORA] First packet received:", lora_client.get_all())
+#     return True
+
+# def actualizar():
+#     return lora_client.actualizar()
+
+# def get_datos():
+#     return lora_client.get_all()
+
+#------------------------------------
+#   BATERY LEVEL READING
+#------------------------------------
+def _leer_bateria():
+    adc     = machine.ADC(3)
+    raw     = adc.read_u16()
+    voltaje = raw * (3.3 * 3) / 65535
+    return round(voltaje, 3)
+
+#------------------------------------
+#   PAYLOAD  (datos fijos de prueba, sin LoRa)
+#------------------------------------
+def construir_payload():
+    # -- Cuando LoRa esté activo, reemplazar por: --
+    # datos = lora_client.get_all()
+    # return {
+    #     "battery_level" : _leer_bateria(),
+    #     "wind_speed_kmh": float(datos["VV"]) if datos["VV"] != "--" else 0.0,
+    #     "rainfall"      : float(datos["LL"]) if datos["LL"] != "--" else 0.0,
+    #     "uv_index"      : int(datos["UV"])   if datos["UV"] != "--" else 0,
+    #     "temperature_c" : float(datos["T"])  if datos["T"]  != "--" else 0.0,
+    #     "humidity"      : float(datos["H"])  if datos["H"]  != "--" else 0.0,
+    # }
+
+    # Payload fijo para probar el POST sin LoRa
+    return {
+        "battery_level" : _leer_bateria(),
+        "wind_speed_kmh": 12.5,
+        "rainfall"      : 0.0,
+        "uv_index"      : 3,
+        "temperature_c" : 25.0,
+        "humidity"      : 60.0,
+    }
+
+#------------------------------------
+#   HTTP POST
+#------------------------------------
+def enviar_lectura():
+    payload = construir_payload()
+    headers = {"Content-Type": "application/json"}
+    body    = ujson.dumps(payload)
+
+    print(f"[HTTP] POST -> {BASE_URL}")
+    print(f"[HTTP] Body: {body}")
+    print(f"[HTTP] Payload dict : {payload}")
+    print(f"[HTTP] Body JSON    : {body}")
+    print(f"[HTTP] POST -> {BASE_URL}")
+
+    try:
+        resp = urequests.post(BASE_URL, data=body, headers=headers)
+        print(f"[HTTP] Status: {resp.status_code} | Response: {resp.text}")
+        resp.close()
+        blink(2)
+    except Exception as e:
+        print(f"[HTTP] ERROR: {e}")
+        blink(5, ms=80)
+
+#------------------------------------
+#   MAIN
+#------------------------------------
+def main():
+    # 1. Conectar WiFi
+    wlan = connect_wifi(ssid=wifi_ssid, password=wifi_password)
+    if wlan is None:
+        print('[FATAL] Could not connect to WiFi. Restarting...')
+        time.sleep(5)
+        machine.reset()
+
+    # 2. Esperar primer paquete LoRa  (deshabilitado)
+    # esperar_primer_paquete(timeout_ms=5000)
+
+    # 3. Loop principal
+    while True:
+        if not wlan.isconnected():
+            print('[WIFI] Connection lost. Reconnecting...')
+            wlan = connect_wifi(ssid=wifi_ssid, password=wifi_password)
+            if wlan is None:
+                print('[FATAL] Could not reconnect. Restarting...')
+                time.sleep(5)
+                machine.reset()
+
+        # if actualizar():                          # <-- con LoRa
+        #     print("[LORA] New data:", get_datos())
+        #     enviar_lectura()
+
+        # Sin LoRa: enviar cada 10 segundos
+        enviar_lectura()
+        time.sleep(10)
+
+if __name__ == "__main__":
+    main()
